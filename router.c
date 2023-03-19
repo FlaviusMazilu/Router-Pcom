@@ -12,7 +12,7 @@
 #define ARP_TYPE 0x0806
 
 struct route_table_entry *rtable;
-FILE *loging;
+int rtable_len;
 
 void reverse_bytes(uint8_t *data_in, int size) {
 	uint8_t buffer[10];
@@ -68,14 +68,16 @@ void reverse_ip_hdr_struct(struct iphdr *ip_hdr) {
 	ip_hdr->tot_len = ntohs(ip_hdr->tot_len);
 }
 
-char* get_destination_ip_ascii(struct iphdr *ip_hdr) {
+int	am_i_destination_ip(int interface, struct iphdr *ip_hdr) {
+
 	struct in_addr addr;
 	addr.s_addr = ip_hdr->daddr;
-	return inet_ntoa(addr);
-}
+	char destination_ip[30];
+	strcpy(destination_ip, inet_ntoa(addr));
 
-int	am_i_destination_ip(int interface, char *destination_ip) {
 	char *interface_ip = get_interface_ip(interface);
+	printf("interface_ip: %s\n", interface_ip);
+	printf("destination ip: %s\n", destination_ip);
 	if (strcmp(interface_ip, destination_ip) == 0)
 		return 1;
 	return 0; 	
@@ -84,6 +86,60 @@ int	am_i_destination_ip(int interface, char *destination_ip) {
 void handle_icmp()
 {
 	
+}
+
+uint32_t convert_ip_aton(char *ascii_address) {
+	int i = 0;
+	uint32_t ret_val = 0;
+	int val_index = 0;
+	while (ascii_address[i] != '\0') {
+		char buffer[10];
+		int k = 0;
+		while (ascii_address[i] != '.' && ascii_address[i] != '\0') {
+			buffer[k++] = ascii_address[i];
+			i++;
+		}
+		buffer[k] = '\0';
+		int nr = atoi(buffer);
+		printf("nr: %d\n", nr);
+		*((char*)&ret_val + val_index) = (char)nr;
+		if (ascii_address[i] == '\0')
+			break;
+		i++;
+		val_index++;
+	}
+	return ret_val;
+}
+
+
+struct route_table_entry find_next_hoop(uint32_t destination_ip) {
+	// both are in network order
+	// printf("mask off = %0x\n", rtable[0].mask);
+	// printf("destination = %0x\n", destination_ip);
+
+	struct route_table_entry next_hoop;
+	next_hoop.next_hop = -1;
+	uint32_t max_mask = 0;
+	struct in_addr addr;
+	for (int i = 0; i < rtable_len; i++) {
+		if ((destination_ip & rtable[i].mask) == rtable[i].prefix) {
+			// addr.s_addr = rtable[i].mask;
+			// printf("---->MASK:-->%s %0x\n", inet_ntoa(addr), rtable[i].mask);
+			// addr.s_addr = rtable[i].next_hop;
+			// printf("---->NEXT_HOOP:-->%s\n", inet_ntoa(addr));
+
+			if (rtable[i].mask > max_mask) {
+				max_mask = rtable[i].mask;
+				next_hoop = rtable[i];
+			}
+		}
+	}
+	// addr.s_addr = next_hoop.next_hop;
+	// printf("FINAL:NEXT HOOP: %s\n", inet_ntoa(addr));
+	// addr.s_addr = next_hoop.mask;
+	// printf("FINAL:MASK: %s %0x\n", inet_ntoa(addr), next_hoop.mask);
+
+	return next_hoop;
 }
 
 void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int interface) {
@@ -107,9 +163,14 @@ void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int interface) 
 		return;
 	}
 	printf("checksum GOOD\n");
-	char *destination_ip_ascii = get_destination_ip_ascii(&my_ip_hdr);
-	if (am_i_destination_ip(interface, destination_ip_ascii)) {
+	if (am_i_destination_ip(interface, ip_hdr)) {
 		printf("IP: the packet is for me\n");
+		handle_icmp();
+		return;
+	}
+	struct route_table_entry next_hoop = find_next_hoop(my_ip_hdr.daddr);
+	if (next_hoop.next_hop == -1) {
+		printf("destination unreachable\n");
 		handle_icmp();
 		return;
 	}
@@ -120,24 +181,23 @@ void init_rtable(char *pathname) {
 	DIE(rtable == NULL, "malloc rtable failed\n");
 	int rc = read_rtable(pathname, rtable);
 	if (rc < 0) {
-		fprintf(loging, "read rtable failed\n");
+		printf("read rtable failed\n");
 		DIE(rc < 0, "read rtable failed\n");
 	}
+	rtable_len = rc;
 }
 
 int main(int argc, char *argv[])
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	printf("hei mama\n"); 
-	loging = fopen("log.txt", "a");
-	fprintf(loging, "skr\n");
 	char buf[MAX_PACKET_LEN];
 
 	// Do not modify this line
 	init(argc - 2, argv + 2);
 
 	init_rtable(argv[1]);
-	
+
 	while (1) {
 		printf("in the loop\n");
 		int interface;
@@ -164,8 +224,6 @@ int main(int argc, char *argv[])
 		any header field which has more than 1 byte will need to be conerted to
 		host order. For example, ntohs(eth_hdr->ether_type). The oposite is needed when
 		sending a packet on the link, */
-
-
 	}
 }
 /*
