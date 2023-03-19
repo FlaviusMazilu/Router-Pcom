@@ -12,6 +12,7 @@
 #define ARP_TYPE 0x0806
 
 struct route_table_entry *rtable;
+FILE *loging;
 
 void reverse_bytes(uint8_t *data_in, int size) {
 	uint8_t buffer[10];
@@ -45,6 +46,8 @@ int am_i_destination_mac(struct ether_header *eth_hdr, int interface) {
 	if (ok_broadcast == 1)
 		return 1;
 
+	reverse_bytes(my_mac, MAC_ADR_SIZE_BYTES);
+
 	for (int i = 0; i < MAC_ADR_SIZE_BYTES; i++) {
 		if (eth_hdr->ether_dhost[i] != my_mac[i])
 			return 0;
@@ -52,8 +55,7 @@ int am_i_destination_mac(struct ether_header *eth_hdr, int interface) {
 	return 1;
 }
 
-void handle_arp_packet(struct ether_header *ether_header, char *frame) {
-
+void handle_arp_packet(struct ether_header *ether_header, char *frame, int interface) {
 
 }
 
@@ -66,27 +68,51 @@ void reverse_ip_hdr_struct(struct iphdr *ip_hdr) {
 	ip_hdr->tot_len = ntohs(ip_hdr->tot_len);
 }
 
-void handle_ip_packet(struct ether_header *eth_hdr, char *frame) {
+char* get_destination_ip_ascii(struct iphdr *ip_hdr) {
+	struct in_addr addr;
+	addr.s_addr = ip_hdr->daddr;
+	return inet_ntoa(addr);
+}
+
+int	am_i_destination_ip(int interface, char *destination_ip) {
+	char *interface_ip = get_interface_ip(interface);
+	if (strcmp(interface_ip, destination_ip) == 0)
+		return 1;
+	return 0; 	
+}
+
+void handle_icmp()
+{
+	
+}
+
+void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int interface) {
+	printf("Im in handle ip packet\n");
 	struct iphdr *ip_hdr = (struct iphdr *)(frame + sizeof(struct ether_header));
 
 	struct iphdr my_ip_hdr;
 	memcpy(&my_ip_hdr, ip_hdr, sizeof(struct iphdr));
+	// reverse_ip_hdr_struct(&my_ip_hdr);
 
 	uint16_t received_check = my_ip_hdr.check;
+	received_check = ntohs(received_check);
 	my_ip_hdr.check = 0;
 
-	// allegedly checksum already does use ntoh
-	uint16_t new_check = checksum((uint16_t*)&my_ip_hdr, sizeof(my_ip_hdr));
+	uint16_t new_check = checksum((uint16_t*)&my_ip_hdr, sizeof(struct iphdr));
 
 	if (received_check != new_check) {
 		// drop the packet
-		// TODO send ICMP reply 
+		// TODO send ICMP reply
+		printf("checksum BAD\n");
 		return;
 	}
-	reverse_ip_hdr_struct(&my_ip_hdr);
-
-	
-
+	printf("checksum GOOD\n");
+	char *destination_ip_ascii = get_destination_ip_ascii(&my_ip_hdr);
+	if (am_i_destination_ip(interface, destination_ip_ascii)) {
+		printf("IP: the packet is for me\n");
+		handle_icmp();
+		return;
+	}
 }
 
 void init_rtable(char *pathname) {
@@ -94,22 +120,26 @@ void init_rtable(char *pathname) {
 	DIE(rtable == NULL, "malloc rtable failed\n");
 	int rc = read_rtable(pathname, rtable);
 	if (rc < 0) {
-		printf("read rtable failed\n");
+		fprintf(loging, "read rtable failed\n");
 		DIE(rc < 0, "read rtable failed\n");
 	}
 }
 
 int main(int argc, char *argv[])
 {
+	setvbuf(stdout, NULL, _IONBF, 0);
+	printf("hei mama\n"); 
+	loging = fopen("log.txt", "a");
+	fprintf(loging, "skr\n");
 	char buf[MAX_PACKET_LEN];
 
 	// Do not modify this line
 	init(argc - 2, argv + 2);
 
-	init_rtable("rtable0.txt");
+	init_rtable(argv[1]);
 	
 	while (1) {
-
+		printf("in the loop\n");
 		int interface;
 		size_t len;
 
@@ -118,15 +148,17 @@ int main(int argc, char *argv[])
 
 		struct ether_header *eth_hdr = (struct ether_header *) buf;
 		convert_to_host_eth_header(eth_hdr);
-
-		if (am_i_destination_mac(eth_hdr, interface) == 0) 
+		printf("I got eth header\n");
+		if (am_i_destination_mac(eth_hdr, interface) == 0) {
+			printf("its not for me apparently");
 			continue; // drop the eth frame, it's not for me
+		}
 
 		printf("It's for me\n");
 		if (eth_hdr->ether_type == ARP_TYPE)
-			handle_arp_packet(eth_hdr, buf);
+			handle_arp_packet(eth_hdr, buf, interface);
 		else
-			handle_ip_packet(eth_hdr, buf);
+			handle_ip_packet(eth_hdr, buf, interface);
 	
 		/* Note that packets received are in network order,
 		any header field which has more than 1 byte will need to be conerted to
