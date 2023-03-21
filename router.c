@@ -27,14 +27,11 @@ void init_arp_queue() {
 	DIE (!packets_arp_queue.array, "arp table init failed\n");
 }
 
-
-
 void init_arp_table() {
 	arp_tbl.actual_size = 0;
 	arp_tbl.capacity = 10;
 	arp_tbl.array = malloc(sizeof(struct arp_entry) * 10);
 	DIE (!arp_tbl.array, "arp table init failed\n");
-	
 }
 
 void arp_enq(struct arp_queue_entry entry) {
@@ -46,18 +43,16 @@ void arp_enq(struct arp_queue_entry entry) {
 		DIE (!aux, "realloc failed\n");
 		packets_arp_queue.array = aux;
 	}
-	printf("ARP: %d %d %p", packets_arp_queue.actual_size, packets_arp_queue.capacity, packets_arp_queue.array);
 	packets_arp_queue.array[packets_arp_queue.actual_size++] = entry;
-	printf("arp enq end\n");
-
 }
 
-struct arp_queue_entry create_arp_queue_entry(void *packet, int len, struct route_table_entry entry) {
+struct arp_queue_entry create_arp_queue_entry(void *frame, int len, struct route_table_entry entry) {
 	struct arp_queue_entry p;
 	p.next_hoop = entry;
-	p.packet = packet; // TODO MEMCPY
+	p.packet = frame; // TODO MEMCPY
+	p.packet_len = len;
 	p.packet = malloc(MAX_PACKET_LEN);
-	memcpy(p.packet, packet, len);
+	memcpy(p.packet, frame, len);
 	return p;
 }
 
@@ -114,13 +109,85 @@ int am_i_destination_mac(struct ether_header *eth_hdr, int interface) {
 	return 1;
 }
 
-void handle_arp_reply(struct ether_header *ether_header, char *frame, int interface) {
-	printf("Im in handle ARP packet\n");
+void add_eth_header_ip(char *frame, int interface_source, uint8_t *mac_dest) {
+	struct ether_header *eth_hdr = (struct ether_header *)frame;
+	eth_hdr->ether_type = htons(IP_TYPE);
+	get_interface_mac(interface_source, eth_hdr->ether_shost);
+	memcpy(eth_hdr->ether_dhost, mac_dest, MAC_ADR_SIZE_BYTES);
+}
+
+void remove_arp_entry_from_queue(int index) {
+	free(packets_arp_queue.array[index].packet);
+	for (int i = index; i < packets_arp_queue.actual_size - 1; i++) {
+		packets_arp_queue.array[i] = packets_arp_queue.array[i + 1]; 
+	}
+	packets_arp_queue.actual_size = packets_arp_queue.actual_size - 1;
+}
+
+void handle_arp_recv_reply(struct arp_header *arp_hdr) {
 	struct arp_entry arp_entry;
-	struct arp_header *arp_hdr = (struct arp_header*)(frame + sizeof(struct ether_header)); 
 	arp_entry.ip = arp_hdr->spa;
 	memcpy(arp_entry.mac, arp_hdr->sha, MAC_ADR_SIZE_BYTES);
 	add_entry_arp(arp_entry);
+	// send the packets that were waiting for arp reply
+	for (int i = 0; i < packets_arp_queue.actual_size; i++) {
+		if (packets_arp_queue.array[i].next_hoop.next_hop == arp_hdr->spa) {
+
+			add_eth_header_ip(packets_arp_queue.array[i].packet,
+							packets_arp_queue.array[i].next_hoop.interface,
+							arp_entry.mac);
+			send_to_link(packets_arp_queue.array[i].next_hoop.interface,
+						packets_arp_queue.array[i].packet,
+						packets_arp_queue.array[i].packet_len);
+			
+			remove_arp_entry_from_queue(i);
+			// given the fact that the entry on pos i was replaced by the next
+			// we shall test for the next too
+			i--; 
+		}
+	}
+}
+
+void handle_arp_recv_request(struct arp_header *arp_hdr_recv, int interface) {
+	uint32_t my_ip = convert_ip_aton(get_interface_ip(interface)); 
+	if (my_ip != arp_hdr_recv->tpa) {
+		printf("[handle arp received request] not my ip\n");
+		return; // sender wasn't looking for my ip
+	}
+
+	char my_message[MAX_PACKET_LEN];
+	struct ether_header *eth_hdr = (struct ether_header*)my_message;
+	
+	get_interface_mac(interface, eth_hdr->ether_shost);
+	memcpy(eth_hdr->ether_dhost, arp_hdr_recv->sha, MAC_ADR_SIZE_BYTES);
+
+	eth_hdr->ether_type = htons(ARP_TYPE);
+
+	struct arp_header *arp_hdr_send = (struct arp_header*)(my_message + sizeof(struct ether_header));
+	arp_hdr_send->hlen = 6;
+	arp_hdr_send->plen = 4;
+
+	arp_hdr_send->op = htons(2);
+	arp_hdr_send->ptype = htons(IP_TYPE);
+	arp_hdr_send->htype = htons(1);
+
+	arp_hdr_send->spa = my_ip;
+	arp_hdr_send->tpa = arp_hdr_recv->spa;
+
+	get_interface_mac(interface, arp_hdr_send->sha);
+	memcpy(arp_hdr_send->tha, arp_hdr_recv->sha, MAC_ADR_SIZE_BYTES);
+	
+	send_to_link(interface, my_message, sizeof(struct ether_header) + sizeof(struct arp_header));
+}
+
+void handle_arp_packet(struct ether_header *ether_header, char *frame, int interface) {
+	printf("Im in handle ARP packet\n");
+	struct arp_header *arp_hdr = (struct arp_header*)(frame + sizeof(struct ether_header));
+	if (arp_hdr->op == htons(1))
+		handle_arp_recv_request(arp_hdr, interface);
+	else
+		handle_arp_recv_reply(arp_hdr);
+	
 }
 
 void reverse_ip_hdr_struct(struct iphdr *ip_hdr) {
@@ -310,9 +377,11 @@ void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, 
 	if (arp_dest == NULL) {
 		// it means there's no entry in the arp table for the ip to send to
 
-		char *packet = frame + sizeof(struct ether_header);
-		int length = len_frame - sizeof(struct ether_header); 
-		struct arp_queue_entry entry = create_arp_queue_entry(packet, length, next_hoop);
+		// char *packet = frame + sizeof(struct ether_header);
+		// int length = len_frame - sizeof(struct ether_header);
+
+		// make space for the next ether header too 
+		struct arp_queue_entry entry = create_arp_queue_entry(frame, len_frame, next_hoop);
 		printf("[HANDLE IP PACKET] am creat un entry\n");
 
 		arp_enq(entry);
@@ -346,11 +415,6 @@ void init_rtable(char *pathname) {
 	rtable_len = rc;
 }
 
-// void init_arp_table() {
-	// arp_table = malloc(sizeof(struct arp_entry) * 100);
-	// arp_table_len = parse_arp_table("arp_table.txt", arp_table);
-// }
-
 int main(int argc, char *argv[])
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -381,7 +445,7 @@ int main(int argc, char *argv[])
 
 		printf("It's for me\n");
 		if (eth_hdr->ether_type == ARP_TYPE)
-			handle_arp_reply(eth_hdr, buf, interface);
+			handle_arp_packet(eth_hdr, buf, interface);
 		else
 			handle_ip_packet(eth_hdr, buf, len, interface);
 	

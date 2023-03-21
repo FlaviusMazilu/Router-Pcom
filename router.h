@@ -1,5 +1,5 @@
 void init_rtable();
-
+uint32_t convert_ip_aton(char *ascii_address);
 struct arp_table {
     struct arp_entry *array;
     int capacity;
@@ -8,6 +8,7 @@ struct arp_table {
 
 struct arp_queue_entry {
     void *packet;
+    int packet_len;
     struct route_table_entry next_hoop;
 };
 
