@@ -222,15 +222,14 @@ struct route_table_entry find_next_hoop(uint32_t destination_ip) {
 #define TTL_TYPE 11
 #define HOST_UNREC_TYPE 3
 
-int update_ttl(char *frame, int interface, char *og_payload) {
-	struct ether_header *eth_hdr = (struct ether_header*)frame; 
+int update_ttl(char *frame, int len_frame, int interface) {
 	struct iphdr *ip_hdr = (struct iphdr*)(frame + SZ_ETH_HDR);
 	printf("TTL:%d\n", ip_hdr->ttl);
 	if (ip_hdr->ttl == 0 || ip_hdr->ttl == 1) {
 		//time limit exceeded
 		printf("handle ttl 0/1\n");
-
-		icmp_ttl_or_unrec(og_payload, interface, ip_hdr->saddr, eth_hdr->ether_shost, TTL_TYPE);
+		handle_icmp(frame, len_frame, TTL_TYPE, 0, interface);
+		// icmp_ttl_or_unrec(og_payload, interface, ip_hdr->saddr, eth_hdr->ether_shost, TTL_TYPE);
 		return -1;
 	}
 	ip_hdr->ttl = ip_hdr->ttl - 1;
@@ -242,12 +241,14 @@ void update_checksum(struct iphdr *ip_hdr) {
 	ip_hdr->check = htons(checksum((uint16_t*)ip_hdr, sizeof(struct iphdr)));
 }
 
-void handle_icmp(char *og_payload, uint8_t type, uint8_t code)
-{	
+void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int interface)
+{
+	struct ether_header *eth_hdr_recv = (struct ether_header *)frame;
+	struct iphdr *ip_hdr_recv = (struct iphdr*)(frame + SZ_ETH_HDR);
 
-}
+	uint8_t *mac_dest = eth_hdr_recv->ether_shost;
+	uint32_t ip_dest = ip_hdr_recv->saddr;
 
-void icmp_ttl_or_unrec(char *og_payload, int interface, uint32_t ip_dest, uint8_t *mac_dest, uint8_t type) {
 	char new_message[MAX_PACKET_LEN];
 	struct ether_header *eth_hdr = (struct ether_header *)new_message;
 
@@ -267,12 +268,62 @@ void icmp_ttl_or_unrec(char *og_payload, int interface, uint32_t ip_dest, uint8_
 	ip_hdr->id = htons(1);
 
 	ip_hdr->ttl = 64;
-	ip_hdr->tot_len = htons(sizeof(struct iphdr) + SZ_ICMP_HDR + OG_PAYLOAD_SIZE);
+	char *og_payload;
+	int len_pld = 0;
+	if (type == TTL_TYPE || type == HOST_UNREC_TYPE) {
+		// in this case, as a payload after icmp header should be sent the ip header
+		// received + 8 bytes after that
+		og_payload = frame + SZ_ETH_HDR;
+
+		// the length of the payload its sizeof(ip header) + 8
+		len_pld = SZ_IP_HDR + 8;
+
+		// beside the payload, ip header total len is equal to it's size + the size of icmp header
+		// + the payload
+		ip_hdr->tot_len = htons(sizeof(struct iphdr) + SZ_ICMP_HDR + len_pld);
+
+	} else {
+		// in the payload should be just the message afther the icmp header received 
+		// i let the icmp header in the original payload for further use
+		og_payload = frame + SZ_ETH_HDR + SZ_IP_HDR;
+		len_pld = len_frame - SZ_ETH_HDR - SZ_IP_HDR - SZ_ICMP_HDR;
+
+		ip_hdr->tot_len = htons(sizeof(struct iphdr) + SZ_ICMP_HDR + len_pld);
+	}
 
 	ip_hdr->protocol = 1;
 
 	ip_hdr->check = htons(checksum((uint16_t*)ip_hdr, sizeof(struct iphdr)));
+	printf("handle icmp this far?\n");
+	if (type == TTL_TYPE || type == HOST_UNREC_TYPE)
+		icmp_ttl_or_unrec(og_payload, len_pld, interface, type, new_message);
+	else
+		icmp_echo_reply(og_payload, len_pld, interface, new_message);
+}
 
+void icmp_echo_reply(char *og_payload, int len_pld, int interface, char *new_message) {
+	printf("LEN_PLD: %d\n", len_pld);
+	
+	struct icmphdr *icmp_hdr = (struct icmphdr *)(new_message + sizeof(struct ether_header) + sizeof(struct iphdr));
+	struct icmphdr *icmp_hdr_recv = (struct icmphdr *)og_payload;
+	icmp_hdr->code = 0;
+	icmp_hdr->type = 0;
+	
+	icmp_hdr->un.echo.id = icmp_hdr_recv->un.echo.id;
+	icmp_hdr->un.echo.sequence = icmp_hdr_recv->un.echo.sequence;
+	og_payload += SZ_ICMP_HDR;
+	printf("icmp ECHO REPLY?\n");
+
+	int offset = SZ_ETH_HDR + SZ_IP_HDR + SZ_ICMP_HDR;
+	memcpy(new_message + offset, og_payload, len_pld);
+
+	icmp_hdr->checksum = 0;
+	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR + len_pld));
+
+	send_to_link(interface, new_message, offset + len_pld);
+} 
+
+void icmp_ttl_or_unrec(char *og_payload, int len_pld, int interface, uint8_t type, char *new_message) {
 	struct icmphdr *icmp_hdr = (struct icmphdr *)(new_message + sizeof(struct ether_header) + sizeof(struct iphdr));
 
 	icmp_hdr->un.echo.id = 0;
@@ -280,14 +331,14 @@ void icmp_ttl_or_unrec(char *og_payload, int interface, uint32_t ip_dest, uint8_
 
 	icmp_hdr->code = 0;
 	icmp_hdr->type = type;
-	icmp_hdr->checksum = 0;
-	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR));
-
-	printf("CHECKSUM: %x\n", icmp_hdr->checksum);
 
 	int offset = SZ_ETH_HDR + SZ_IP_HDR + SZ_ICMP_HDR;
-	memcpy(new_message + offset, og_payload, OG_PAYLOAD_SIZE);
-	send_to_link(interface, new_message, offset + OG_PAYLOAD_SIZE);
+	memcpy(new_message + offset, og_payload, len_pld);
+
+	icmp_hdr->checksum = 0;
+	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR + len_pld));
+
+	send_to_link(interface, new_message, offset + len_pld);
 }
 
 void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, int interface) {
@@ -307,20 +358,21 @@ void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, 
 		return;
 	}
 	printf("checksum GOOD\n");
+	// char *og_payload = frame + SZ_ETH_HDR + SZ_IP_HDR;
+	// int len_pld = len_frame - SZ_ETH_HDR + SZ_IP_HDR;
 	if (am_i_destination_ip(interface, ip_hdr)) {
 		printf("IP: the packet is for me: Echo reply\n");
-		// handle_icmp();
+		handle_icmp(frame, len_frame, 0, 0, interface);
 		return;
 	}
-	char *og_payload = frame + SZ_ETH_HDR + SZ_IP_HDR;
-	int rc = update_ttl(frame, interface, og_payload);
+	int rc = update_ttl(frame, len_frame, interface);
 	if (rc)
 		return; // the packet has been dropped and a reply has been sent
 
 	struct route_table_entry next_hoop = find_next_hoop(ip_hdr->daddr);
 	if (next_hoop.next_hop == (uint32_t)-1) {
 		printf("destination unreachable\n");
-		icmp_ttl_or_unrec(og_payload, interface, ip_hdr->saddr, eth_hdr->ether_shost, HOST_UNREC_TYPE);
+		handle_icmp(frame, len_frame, HOST_UNREC_TYPE, 0, interface);
 		return;
 	}
 

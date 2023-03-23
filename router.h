@@ -1,6 +1,9 @@
 void init_rtable();
 uint32_t convert_ip_aton(char *ascii_address);
-void icmp_ttl_or_unrec(char *og_payload, int interface, uint32_t ip_dest, uint8_t *mac_dest, uint8_t type);
+void icmp_echo_reply(char *og_payload, int len_pld, int interface, char *new_message);
+void icmp_ttl_or_unrec(char *og_payload, int len_pld, int interface, uint8_t type, char *new_message);
+void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int interface);
+
 
 struct arp_table {
     struct arp_entry *array;
