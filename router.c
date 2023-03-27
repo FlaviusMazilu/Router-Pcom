@@ -15,6 +15,8 @@
 #define SZ_ETH_HDR (sizeof(struct ether_header))
 #define SZ_IP_HDR (sizeof(struct iphdr))
 #define SZ_ICMP_HDR 8
+#define TTL_TYPE 11
+#define HOST_UNREC_TYPE 3
 
 struct route_table_entry *rtable;
 int rtable_len;
@@ -219,8 +221,6 @@ struct route_table_entry find_next_hoop(uint32_t destination_ip) {
 
 	return next_hoop;
 }
-#define TTL_TYPE 11
-#define HOST_UNREC_TYPE 3
 
 int update_ttl(char *frame, int len_frame, int interface) {
 	struct iphdr *ip_hdr = (struct iphdr*)(frame + SZ_ETH_HDR);
