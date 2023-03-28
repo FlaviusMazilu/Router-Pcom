@@ -3,7 +3,10 @@
 #include "protocols.h"
 #include "router.h"
 #include "arp.h"
+#include "icmp.h"
+#include "trie.h"
 
+#include <stdbool.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
@@ -18,14 +21,8 @@
 #define TTL_TYPE 11
 #define HOST_UNREC_TYPE 3
 
-struct route_table_entry *rtable;
-int rtable_len;
-
-// struct arp_entry *arp_table;
-// int arp_table_len;
 struct arp_queue packets_arp_queue;
-struct arp_table arp_tbl;
-
+struct arp_table arp_tbl; 
 
 void reverse_bytes(uint8_t *data_in, int size) {
 	uint8_t buffer[10];
@@ -47,7 +44,6 @@ void convert_to_host_eth_header(struct ether_header *eth_hdr) {
 
 int am_i_destination_mac(struct ether_header *eth_hdr, int interface) {
 	
-	//TODO modify to different endianess
 	uint8_t my_mac[MAC_ADR_SIZE_BYTES];
 	get_interface_mac(interface, my_mac);
 
@@ -75,89 +71,6 @@ void add_eth_header_ip(char *frame, int interface_source, uint8_t *mac_dest) {
 	memcpy(eth_hdr->ether_dhost, mac_dest, MAC_ADR_SIZE_BYTES);
 }
 
-void remove_arp_entry_from_queue(int index) {
-	free(packets_arp_queue.array[index].packet);
-	for (int i = index; i < packets_arp_queue.actual_size - 1; i++) {
-		packets_arp_queue.array[i] = packets_arp_queue.array[i + 1]; 
-	}
-	packets_arp_queue.actual_size = packets_arp_queue.actual_size - 1;
-}
-
-void handle_arp_recv_reply(struct arp_header *arp_hdr) {
-	struct arp_entry arp_entry;
-	arp_entry.ip = arp_hdr->spa;
-	memcpy(arp_entry.mac, arp_hdr->sha, MAC_ADR_SIZE_BYTES);
-	add_entry_arp(arp_entry);
-	// send the packets that were waiting for arp reply
-	for (int i = 0; i < packets_arp_queue.actual_size; i++) {
-		if (packets_arp_queue.array[i].next_hoop.next_hop == arp_hdr->spa) {
-
-			add_eth_header_ip(packets_arp_queue.array[i].packet,
-							packets_arp_queue.array[i].next_hoop.interface,
-							arp_entry.mac);
-			send_to_link(packets_arp_queue.array[i].next_hoop.interface,
-						packets_arp_queue.array[i].packet,
-						packets_arp_queue.array[i].packet_len);
-			
-			remove_arp_entry_from_queue(i);
-			// given the fact that the entry on pos i was replaced by the next
-			// we shall test for the next too
-			i--; 
-		}
-	}
-}
-
-void handle_arp_recv_request(struct arp_header *arp_hdr_recv, int interface) {
-	uint32_t my_ip = convert_ip_aton(get_interface_ip(interface)); 
-	if (my_ip != arp_hdr_recv->tpa) {
-		printf("[handle arp received request] not my ip\n");
-		return; // sender wasn't looking for my ip
-	}
-
-	char my_message[MAX_PACKET_LEN];
-	struct ether_header *eth_hdr = (struct ether_header*)my_message;
-	
-	get_interface_mac(interface, eth_hdr->ether_shost);
-	memcpy(eth_hdr->ether_dhost, arp_hdr_recv->sha, MAC_ADR_SIZE_BYTES);
-
-	eth_hdr->ether_type = htons(ARP_TYPE);
-
-	struct arp_header *arp_hdr_send = (struct arp_header*)(my_message + sizeof(struct ether_header));
-	arp_hdr_send->hlen = 6;
-	arp_hdr_send->plen = 4;
-
-	arp_hdr_send->op = htons(2);
-	arp_hdr_send->ptype = htons(IP_TYPE);
-	arp_hdr_send->htype = htons(1);
-
-	arp_hdr_send->spa = my_ip;
-	arp_hdr_send->tpa = arp_hdr_recv->spa;
-
-	get_interface_mac(interface, arp_hdr_send->sha);
-	memcpy(arp_hdr_send->tha, arp_hdr_recv->sha, MAC_ADR_SIZE_BYTES);
-	
-	send_to_link(interface, my_message, sizeof(struct ether_header) + sizeof(struct arp_header));
-}
-
-void handle_arp_packet(struct ether_header *ether_header, char *frame, int interface) {
-	printf("Im in handle ARP packet\n");
-	struct arp_header *arp_hdr = (struct arp_header*)(frame + sizeof(struct ether_header));
-	if (arp_hdr->op == htons(1))
-		handle_arp_recv_request(arp_hdr, interface);
-	else
-		handle_arp_recv_reply(arp_hdr);
-	
-}
-
-void reverse_ip_hdr_struct(struct iphdr *ip_hdr) {
-	ip_hdr->check = ntohs(ip_hdr->check);
-	ip_hdr->daddr = ntohl(ip_hdr->daddr);
-	ip_hdr->saddr = ntohl(ip_hdr->saddr);
-	ip_hdr->frag_off = ntohs(ip_hdr->frag_off);
-	ip_hdr->id = ntohs(ip_hdr->id);
-	ip_hdr->tot_len = ntohs(ip_hdr->tot_len);
-}
-
 int	am_i_destination_ip(int interface, struct iphdr *ip_hdr) {
 
 	struct in_addr addr;
@@ -166,8 +79,6 @@ int	am_i_destination_ip(int interface, struct iphdr *ip_hdr) {
 	strcpy(destination_ip, inet_ntoa(addr));
 
 	char *interface_ip = get_interface_ip(interface);
-	printf("interface_ip: %s\n", interface_ip);
-	printf("destination ip: %s\n", destination_ip);
 	if (strcmp(interface_ip, destination_ip) == 0)
 		return 1;
 	return 0;
@@ -196,32 +107,6 @@ uint32_t convert_ip_aton(char *ascii_address) {
 	return ret_val;
 }
 
-
-struct route_table_entry find_next_hoop(uint32_t destination_ip) {
-	// both are in network order
-	// printf("mask off = %0x\n", rtable[0].mask);
-	// printf("destination = %0x\n", destination_ip);
-
-	struct route_table_entry next_hoop;
-	next_hoop.next_hop = -1;
-	uint32_t max_mask = 0;
-	for (int i = 0; i < rtable_len; i++) {
-		if ((destination_ip & rtable[i].mask) == rtable[i].prefix) {
-
-			if (rtable[i].mask > max_mask) {
-				max_mask = rtable[i].mask;
-				next_hoop = rtable[i];
-			}
-		}
-	}
-
-	struct in_addr addr;
-	addr.s_addr = next_hoop.next_hop;
-	printf("NEXT_HOOP: %s %0x\n", inet_ntoa(addr), next_hoop.mask);
-
-	return next_hoop;
-}
-
 int update_ttl(char *frame, int len_frame, int interface) {
 	struct iphdr *ip_hdr = (struct iphdr*)(frame + SZ_ETH_HDR);
 	printf("TTL:%d\n", ip_hdr->ttl);
@@ -229,7 +114,6 @@ int update_ttl(char *frame, int len_frame, int interface) {
 		//time limit exceeded
 		printf("handle ttl 0/1\n");
 		handle_icmp(frame, len_frame, TTL_TYPE, 0, interface);
-		// icmp_ttl_or_unrec(og_payload, interface, ip_hdr->saddr, eth_hdr->ether_shost, TTL_TYPE);
 		return -1;
 	}
 	ip_hdr->ttl = ip_hdr->ttl - 1;
@@ -241,108 +125,8 @@ void update_checksum(struct iphdr *ip_hdr) {
 	ip_hdr->check = htons(checksum((uint16_t*)ip_hdr, sizeof(struct iphdr)));
 }
 
-void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int interface)
-{
-	struct ether_header *eth_hdr_recv = (struct ether_header *)frame;
-	struct iphdr *ip_hdr_recv = (struct iphdr*)(frame + SZ_ETH_HDR);
-
-	uint8_t *mac_dest = eth_hdr_recv->ether_shost;
-	uint32_t ip_dest = ip_hdr_recv->saddr;
-
-	char new_message[MAX_PACKET_LEN];
-	struct ether_header *eth_hdr = (struct ether_header *)new_message;
-
-	memcpy(eth_hdr->ether_dhost, mac_dest, MAC_ADR_SIZE_BYTES);
-	get_interface_mac(interface, eth_hdr->ether_shost);
-	eth_hdr->ether_type = htons(IP_TYPE);
-
-	struct iphdr *ip_hdr = (struct iphdr *)(new_message + sizeof(struct ether_header));
-	ip_hdr->daddr = ip_dest;
-	ip_hdr->saddr = convert_ip_aton(get_interface_ip(interface));
-
-	ip_hdr->check = 0;
-	ip_hdr->frag_off = 0;
-	ip_hdr->tos = 0;
-	ip_hdr->version = 4;
-	ip_hdr->ihl = 5;
-	ip_hdr->id = htons(1);
-
-	ip_hdr->ttl = 64;
-	char *og_payload;
-	int len_pld = 0;
-	if (type == TTL_TYPE || type == HOST_UNREC_TYPE) {
-		// in this case, as a payload after icmp header should be sent the ip header
-		// received + 8 bytes after that
-		og_payload = frame + SZ_ETH_HDR;
-
-		// the length of the payload its sizeof(ip header) + 8
-		len_pld = SZ_IP_HDR + 8;
-
-		// beside the payload, ip header total len is equal to it's size + the size of icmp header
-		// + the payload
-		ip_hdr->tot_len = htons(sizeof(struct iphdr) + SZ_ICMP_HDR + len_pld);
-
-	} else {
-		// in the payload should be just the message afther the icmp header received 
-		// i let the icmp header in the original payload for further use
-		og_payload = frame + SZ_ETH_HDR + SZ_IP_HDR;
-		len_pld = len_frame - SZ_ETH_HDR - SZ_IP_HDR - SZ_ICMP_HDR;
-
-		ip_hdr->tot_len = htons(sizeof(struct iphdr) + SZ_ICMP_HDR + len_pld);
-	}
-
-	ip_hdr->protocol = 1;
-
-	ip_hdr->check = htons(checksum((uint16_t*)ip_hdr, sizeof(struct iphdr)));
-	printf("handle icmp this far?\n");
-	if (type == TTL_TYPE || type == HOST_UNREC_TYPE)
-		icmp_ttl_or_unrec(og_payload, len_pld, interface, type, new_message);
-	else
-		icmp_echo_reply(og_payload, len_pld, interface, new_message);
-}
-
-void icmp_echo_reply(char *og_payload, int len_pld, int interface, char *new_message) {
-	printf("LEN_PLD: %d\n", len_pld);
-	
-	struct icmphdr *icmp_hdr = (struct icmphdr *)(new_message + sizeof(struct ether_header) + sizeof(struct iphdr));
-	struct icmphdr *icmp_hdr_recv = (struct icmphdr *)og_payload;
-	icmp_hdr->code = 0;
-	icmp_hdr->type = 0;
-	
-	icmp_hdr->un.echo.id = icmp_hdr_recv->un.echo.id;
-	icmp_hdr->un.echo.sequence = icmp_hdr_recv->un.echo.sequence;
-	og_payload += SZ_ICMP_HDR;
-	printf("icmp ECHO REPLY?\n");
-
-	int offset = SZ_ETH_HDR + SZ_IP_HDR + SZ_ICMP_HDR;
-	memcpy(new_message + offset, og_payload, len_pld);
-
-	icmp_hdr->checksum = 0;
-	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR + len_pld));
-
-	send_to_link(interface, new_message, offset + len_pld);
-} 
-
-void icmp_ttl_or_unrec(char *og_payload, int len_pld, int interface, uint8_t type, char *new_message) {
-	struct icmphdr *icmp_hdr = (struct icmphdr *)(new_message + sizeof(struct ether_header) + sizeof(struct iphdr));
-
-	icmp_hdr->un.echo.id = 0;
-	icmp_hdr->un.echo.sequence = 0;
-
-	icmp_hdr->code = 0;
-	icmp_hdr->type = type;
-
-	int offset = SZ_ETH_HDR + SZ_IP_HDR + SZ_ICMP_HDR;
-	memcpy(new_message + offset, og_payload, len_pld);
-
-	icmp_hdr->checksum = 0;
-	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR + len_pld));
-
-	send_to_link(interface, new_message, offset + len_pld);
-}
 
 void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, int interface) {
-	printf("Im in handle ip packet\n");
 	struct iphdr *ip_hdr = (struct iphdr *)(frame + sizeof(struct ether_header));
 
 	uint16_t received_check = ip_hdr->check;
@@ -369,24 +153,25 @@ void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, 
 	if (rc)
 		return; // the packet has been dropped and a reply has been sent
 
-	struct route_table_entry next_hoop = find_next_hoop(ip_hdr->daddr);
-	if (next_hoop.next_hop == (uint32_t)-1) {
-		printf("destination unreachable\n");
+	// struct route_table_entry *next_hoop = find_next_hoop(ip_hdr->daddr);
+	struct route_table_entry *next_hoop = search(ip_hdr->daddr);
+	if (next_hoop == NULL) {
+		printf("destination unreachable :(\n");
 		handle_icmp(frame, len_frame, HOST_UNREC_TYPE, 0, interface);
 		return;
 	}
 
 	update_checksum(ip_hdr);
 	printf("[HANDLE IP PACKET] find mac address in arp\n");
-	struct arp_entry *arp_dest = find_mac_address_in_arp(next_hoop.next_hop);
+	struct arp_entry *arp_dest = find_mac_address_in_arp(next_hoop->next_hop);
 	if (arp_dest == NULL) {
 		// it means there's no entry in the arp table for the ip to send to
 
-		struct arp_queue_entry entry = create_arp_queue_entry(frame, len_frame, next_hoop);
+		struct arp_queue_entry entry = create_arp_queue_entry(frame, len_frame, *next_hoop);
 		arp_enq(entry);
 
 		printf("[HANDLE IP PACKET] generate arp request\n");
-		generate_arp_request(next_hoop.next_hop, next_hoop.interface);
+		generate_arp_request(next_hoop->next_hop, next_hoop->interface);
 		return;
 	}
 
@@ -396,15 +181,7 @@ void handle_ip_packet(struct ether_header *eth_hdr, char *frame, int len_frame, 
 	memcpy(eth_hdr->ether_dhost, arp_dest->mac, MAC_ADR_SIZE_BYTES);
 	
 	// send forward the packet
-	send_to_link(next_hoop.interface, frame, len_frame);
-}
-
-void init_rtable(char *pathname) {
-	rtable = malloc(sizeof(struct route_table_entry) * 100000);
-	DIE(rtable == NULL, "malloc rtable failed\n");
-	int rc = read_rtable(pathname, rtable);
-	DIE(rc < 0, "read rtable failed\n");
-	rtable_len = rc;
+	send_to_link(next_hoop->interface, frame, len_frame);
 }
 
 int main(int argc, char *argv[])
@@ -415,7 +192,7 @@ int main(int argc, char *argv[])
 	// Do not modify this line
 	init(argc - 2, argv + 2);
 
-	init_rtable(argv[1]);
+	init_rtable_trie(argv[1]);
 	init_arp_table();
 	init_arp_queue();
 	while (1) {

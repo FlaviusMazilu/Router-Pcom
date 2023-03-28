@@ -2,21 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <arpa/inet.h>
+
 #include "include/lib.h"
-#define ARRAY_SIZE(a) sizeof(a)/sizeof(a[0])
- 
+
 // Alphabet size (# of symbols)
-#define ALPHABET_SIZE (26)
- 
-// Converts key current character into index
-// use only 'a' through 'z' and lower case
-#define CHAR_TO_INDEX(c) ((int)c - (int)'a')
- 
-// trie node
-struct TrieKey {
-    char *key;
-    struct route_table_entry entry;
-}
+#define ALPHABET_SIZE (3)
+
+struct route_table_entry *rtable;
+int rtable_len;
 
 struct TrieNode
 {
@@ -24,7 +18,7 @@ struct TrieNode
  
     // isEndOfWord is true if the node represents
     // end of a word
-    struct TrieKey *payload;
+    struct route_table_entry *payload;
     bool isEndOfWord;
 };
  
@@ -40,6 +34,7 @@ struct TrieNode *getNode(void)
         int i;
  
         pNode->isEndOfWord = false;
+		pNode->payload = NULL;
  
         for (i = 0; i < ALPHABET_SIZE; i++)
             pNode->children[i] = NULL;
@@ -47,77 +42,93 @@ struct TrieNode *getNode(void)
  
     return pNode;
 }
- 
+struct TrieNode *trie_root; 
+
 // If not present, inserts key into trie
 // If the key is prefix of trie node, just marks leaf node
-void insert(struct TrieNode *root, struct TrieKey *trie_entry)
+char aux[20];
+void replace_dot_with_smth(char *ip) {
+	memcpy(aux, ip, strlen(ip) + 1);
+	for (int i = 0; i < strlen(aux); i++) {
+		if (aux[i] == '.')
+			aux[i] = 58;
+	}
+}
+void insert(struct route_table_entry *trie_entry)
 {
-    char *key = trie_entry->key;
-    int level;
-    int length = strlen(key);
-    int index;
- 
-    struct TrieNode *pCrawl = root;
- 
-    for (level = 0; level < length; level++)
-    {
-        index = CHAR_TO_INDEX(key[level]);
-        if (!pCrawl->children[index])
+    uint32_t index;
+	uint32_t key = trie_entry->prefix;
+	uint32_t mask = ntohl(trie_entry->mask);
+    struct TrieNode *pCrawl = trie_root;
+	char one = 0x80;
+
+	for (int i = 0; i < 4 && mask != 0; i++)
+	{
+		char aux = *((char*)&key + i);  
+		for (int i = 0; i < 8 && mask != 0; i++) {
+			index = aux & one;
+			if (index != 0)
+				index = 1;
+
+			if (!pCrawl->children[index])
             pCrawl->children[index] = getNode();
  
-        pCrawl = pCrawl->children[index];
-    }
- 
-    // mark last node as leaf
+        	pCrawl = pCrawl->children[index];
+
+			aux = aux << 1;	
+			mask = mask << 1;
+
+		}
+	}
+
+	pCrawl->payload = trie_entry;
     pCrawl->isEndOfWord = true;
 }
- 
 // Returns true if key presents in trie, else false
-bool search(struct TrieNode *root, const char *key)
+struct route_table_entry* search(uint32_t ip_dest)
 {
-    int level;
-    int length = strlen(key);
-    int index;
-    struct TrieNode *pCrawl = root;
- 
-    for (level = 0; level < length; level++)
-    {
-        index = CHAR_TO_INDEX(key[level]);
- 
-        if (!pCrawl->children[index])
-            return false;
- 
-        pCrawl = pCrawl->children[index];
-    }
-    if (pCrawl->isEndOfWord) {
-        
-    }
+    uint32_t index = 2;
+    struct TrieNode *pCrawl = trie_root;
+	
+	struct route_table_entry *next_hoop = NULL;
+	uint32_t ip = ip_dest;
+	char one = 0x80;
 
-    return (pCrawl->isEndOfWord);
+	for (int i = 0; i < 4; i++)
+	{
+		char aux = *((char*)&ip + i);  
+		for (int i = 0; i < 8; i++) {
+			if (pCrawl->isEndOfWord == true) {
+				next_hoop = pCrawl->payload;
+			}
+			index = aux & one;
+			if (index != 0)
+				index = 1;
+			printf("%d", index);
+
+			if (!pCrawl->children[index]) {
+				printf("cant go nowhere\n");
+				return next_hoop;
+			}
+			aux = aux << 1;
+        	pCrawl = pCrawl->children[index];
+		}
+	}
+
+    return next_hoop;
 }
- 
-// Driver
-int main()
-{
-    // Input keys (use only 'a' through 'z' and lower case)
-    char keys[][8] = {"the", "a", "there", "answer", "any",
-                     "by", "bye", "their"};
- 
-    char output[][32] = {"Not present in trie", "Present in trie"};
- 
- 
-    struct TrieNode *root = getNode();
- 
-    // Construct trie
-    int i;
-    for (i = 0; i < ARRAY_SIZE(keys); i++)
-        insert(root, keys[i]);
- 
-    // Search for different keys
-    printf("%s --- %s\n", "the", output[search(root, "the")] );
-    printf("%s --- %s\n", "these", output[search(root, "these")] );
-    printf("%s --- %s\n", "their", output[search(root, "their")] );
-    printf("%s --- %s\n", "thaw", output[search(root, "thaw")] );
- 
-    return 0;
+
+void init_rtable_trie(char *pathname) {
+	rtable = malloc(sizeof(struct route_table_entry) * 100000);
+	DIE(rtable == NULL, "malloc rtable failed\n");
+	int rc = read_rtable(pathname, rtable);
+	DIE(rc < 0, "read rtable failed\n");
+	rtable_len = rc;
+
+	trie_root = getNode();
+	printf("before inserting in trie\n");
+	for (int i = 0; i < rtable_len; i++) {
+		insert(&rtable[i]);
+	}
+	printf("after inserting in trie\n");
 }
