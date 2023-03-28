@@ -85,7 +85,7 @@ void insert(struct route_table_entry *trie_entry)
     pCrawl->isEndOfWord = true;
 }
 // Returns true if key presents in trie, else false
-struct route_table_entry* search(uint32_t ip_dest)
+struct route_table_entry* search_next_hoop(uint32_t ip_dest)
 {
     uint32_t index = 2;
     struct TrieNode *pCrawl = trie_root;
