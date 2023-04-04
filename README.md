@@ -8,7 +8,8 @@
 ---
 ## Structure
 - ``router.c router.h`` -> main function
-- ``icmp.c icmp.h`` -> 
+- ``icmp.c icmp.h`` -> functions for sending icmp packets
+- ``arp.c arp.h`` -> contains arp queue, arp table, send and receive arp packets 
 - ``trie.c trie.h`` -> search & insert in rtable
 - ``utils.c utils.h`` -> auxiliary functions
 ---
