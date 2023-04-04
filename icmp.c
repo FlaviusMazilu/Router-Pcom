@@ -11,18 +11,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#define MAC_ADR_SIZE_BYTES 6
-#define IP_TYPE 0x0800
-#define ARP_TYPE 0x0806
-#define OG_PAYLOAD_SIZE 8
-#define SZ_ETH_HDR (sizeof(struct ether_header))
-#define SZ_IP_HDR (sizeof(struct iphdr))
-#define SZ_ICMP_HDR 8
-#define TTL_TYPE 11
-#define HOST_UNREC_TYPE 3
-
-#define MAX_PACKET_LEN 1600
-
 void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int interface)
 {
 	struct ether_header *eth_hdr_recv = (struct ether_header *)frame;
@@ -76,7 +64,6 @@ void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int int
 	ip_hdr->protocol = 1;
 
 	ip_hdr->check = htons(checksum((uint16_t*)ip_hdr, sizeof(struct iphdr)));
-	printf("handle icmp this far?\n");
 	if (type == TTL_TYPE || type == HOST_UNREC_TYPE)
 		icmp_ttl_or_unrec(og_payload, len_pld, interface, type, new_message);
 	else
@@ -84,24 +71,26 @@ void handle_icmp(char *frame, int len_frame, uint8_t type, uint8_t code, int int
 }
 
 void icmp_echo_reply(char *og_payload, int len_pld, int interface, char *new_message) {
-	printf("LEN_PLD: %d\n", len_pld);
-	
+
+	// prepare icmp header	
 	struct icmphdr *icmp_hdr = (struct icmphdr *)(new_message + sizeof(struct ether_header) + sizeof(struct iphdr));
 	struct icmphdr *icmp_hdr_recv = (struct icmphdr *)og_payload;
 	icmp_hdr->code = 0;
 	icmp_hdr->type = 0;
 	
+	// get the received echo id & sequence
 	icmp_hdr->un.echo.id = icmp_hdr_recv->un.echo.id;
 	icmp_hdr->un.echo.sequence = icmp_hdr_recv->un.echo.sequence;
 	og_payload += SZ_ICMP_HDR;
-	printf("icmp ECHO REPLY?\n");
 
 	int offset = SZ_ETH_HDR + SZ_IP_HDR + SZ_ICMP_HDR;
 	memcpy(new_message + offset, og_payload, len_pld);
 
+	// recompute the checksum
 	icmp_hdr->checksum = 0;
 	icmp_hdr->checksum = htons(checksum((uint16_t *)icmp_hdr, SZ_ICMP_HDR + len_pld));
 
+	// send the reply
 	send_to_link(interface, new_message, offset + len_pld);
 } 
 

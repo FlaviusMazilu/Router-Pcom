@@ -7,10 +7,6 @@
 #include "include/protocols.h"
 #include "router.h"
 
-#define MAC_ADR_SIZE_BYTES 6
-#define IP_TYPE 0x0800
-#define ARP_TYPE 0x0806
-
 extern struct arp_queue packets_arp_queue;
 extern struct arp_table arp_tbl;
 

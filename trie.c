@@ -4,24 +4,13 @@
 #include <stdbool.h>
 #include <arpa/inet.h>
 
+#include "trie.h"
 #include "include/lib.h"
 
-// Alphabet size (# of symbols)
-#define ALPHABET_SIZE (3)
 
 struct route_table_entry *rtable;
 int rtable_len;
 
-struct TrieNode
-{
-    struct TrieNode *children[ALPHABET_SIZE];
- 
-    // isEndOfWord is true if the node represents
-    // end of a word
-    struct route_table_entry *payload;
-    bool isEndOfWord;
-};
- 
 // Returns new trie node (initialized to NULLs)
 struct TrieNode *getNode(void)
 {
@@ -46,14 +35,7 @@ struct TrieNode *trie_root;
 
 // If not present, inserts key into trie
 // If the key is prefix of trie node, just marks leaf node
-char aux[20];
-void replace_dot_with_smth(char *ip) {
-	memcpy(aux, ip, strlen(ip) + 1);
-	for (int i = 0; i < strlen(aux); i++) {
-		if (aux[i] == '.')
-			aux[i] = 58;
-	}
-}
+
 void insert(struct route_table_entry *trie_entry)
 {
     uint32_t index;
@@ -61,10 +43,12 @@ void insert(struct route_table_entry *trie_entry)
 	uint32_t mask = ntohl(trie_entry->mask);
     struct TrieNode *pCrawl = trie_root;
 	char one = 0x80;
-
+	// insert the bits of the ip address in trie in big endian kind of complication
+	// firstly, it gets the first byte and inserts it
 	for (int i = 0; i < 4 && mask != 0; i++)
 	{
-		char aux = *((char*)&key + i);  
+		char aux = *((char*)&key + i);
+		// for the 8 bits of a byte
 		for (int i = 0; i < 8 && mask != 0; i++) {
 			index = aux & one;
 			if (index != 0)
@@ -103,13 +87,13 @@ struct route_table_entry* search_next_hoop(uint32_t ip_dest)
 			}
 			index = aux & one;
 			if (index != 0)
-				index = 1;
-			printf("%d", index);
+				index = 1; // it would've been 0b10000
 
-			if (!pCrawl->children[index]) {
-				printf("cant go nowhere\n");
+			// if we got to the longest prefix and the next one in the trie
+			// doesn't match, return the last longest match
+			if (!pCrawl->children[index])
 				return next_hoop;
-			}
+
 			aux = aux << 1;
         	pCrawl = pCrawl->children[index];
 		}
@@ -118,17 +102,17 @@ struct route_table_entry* search_next_hoop(uint32_t ip_dest)
     return next_hoop;
 }
 
+#define MAX_RTABLE_ENTRIES 100000
+
 void init_rtable_trie(char *pathname) {
-	rtable = malloc(sizeof(struct route_table_entry) * 100000);
+	rtable = malloc(sizeof(struct route_table_entry) * MAX_RTABLE_ENTRIES);
 	DIE(rtable == NULL, "malloc rtable failed\n");
 	int rc = read_rtable(pathname, rtable);
 	DIE(rc < 0, "read rtable failed\n");
 	rtable_len = rc;
 
 	trie_root = getNode();
-	printf("before inserting in trie\n");
 	for (int i = 0; i < rtable_len; i++) {
 		insert(&rtable[i]);
 	}
-	printf("after inserting in trie\n");
 }

@@ -1,6 +1,25 @@
 {
     "files.associations": {
         "socket.h": "c",
-        "in.h": "c"
-    }
+        "in.h": "c",
+        "stdio.h": "c",
+        "router.h": "c",
+        "algorithm": "c",
+        "random": "c",
+        "*.tcc": "c",
+        "deque": "c",
+        "string": "c",
+        "unordered_map": "c",
+        "vector": "c",
+        "protocols.h": "c",
+        "lib.h": "c",
+        "queue.h": "c",
+        "unistd.h": "c",
+        "array": "cpp",
+        "string_view": "cpp",
+        "initializer_list": "cpp",
+        "stdlib.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "enabled",
+    "editor.fontFamily": "'Droid Sans Mono', 'monospace', monospace"
 }

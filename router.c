@@ -12,16 +12,6 @@
 #include <unistd.h>
 #include <string.h>
 
-#define MAC_ADR_SIZE_BYTES 6
-#define IP_TYPE 0x0800
-#define ARP_TYPE 0x0806
-#define OG_PAYLOAD_SIZE 8
-#define SZ_ETH_HDR (sizeof(struct ether_header))
-#define SZ_IP_HDR (sizeof(struct iphdr))
-#define SZ_ICMP_HDR 8
-#define TTL_TYPE 11
-#define HOST_UNREC_TYPE 3
-
 struct arp_queue packets_arp_queue;
 struct arp_table arp_tbl; 
 

@@ -1,22 +1,13 @@
 #include "protocols.h"
 #include "lib.h"
 #include "icmp.h"
-
+#include "router.h"
 #include <arpa/inet.h>
 #include <string.h>
 #include <stdio.h>
 
-#define MAC_ADR_SIZE_BYTES 6
-#define IP_TYPE 0x0800
-#define ARP_TYPE 0x0806
-#define OG_PAYLOAD_SIZE 8
-#define SZ_ETH_HDR (sizeof(struct ether_header))
-#define SZ_IP_HDR (sizeof(struct iphdr))
-#define SZ_ICMP_HDR 8
-#define TTL_TYPE 11
-#define HOST_UNREC_TYPE 3
-
 void reverse_bytes(uint8_t *data_in, int size) {
+	// function to transform from little endian->big endian data of more than 2/4
 	uint8_t buffer[10];
 	int k = 0;
 	for (int i = MAC_ADR_SIZE_BYTES - 1; i >= 0; i--) {
@@ -35,7 +26,8 @@ void convert_to_host_eth_header(struct ether_header *eth_hdr) {
 }
 
 int am_i_destination_mac(struct ether_header *eth_hdr, int interface) {
-	
+	// tests if the destination mac on ethernet header received is broadcast
+	// or its the mac of the router's interface
 	uint8_t my_mac[MAC_ADR_SIZE_BYTES];
 	get_interface_mac(interface, my_mac);
 
@@ -77,6 +69,8 @@ int	am_i_destination_ip(int interface, struct iphdr *ip_hdr) {
 }
 
 uint32_t convert_ip_aton(char *ascii_address) {
+	// when you don't know about the existance of inet_pton you implement your own
+	// function that transforms ASCII ipv4 address to big endian number
 	int i = 0;
 	uint32_t ret_val = 0;
 	int val_index = 0;
